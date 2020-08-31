@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+export BACKUP_IMAGE=${BACKUP_IMAGE:="akretion/simple-docker-backup"}
+export BACKUP_LOCAL_KEEP=${BACKUP_LOCAL_KEEP:="3"}
+# TODO env var for s3 default config
+
+export PLUGIN_COMMAND_PREFIX="backupgem"
+export PLUGIN_DATA_ROOT="/home/akretion"  # the place were are located your Docky apps

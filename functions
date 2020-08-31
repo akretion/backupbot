@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config"
+set -eo pipefail
+[[ $DOKKU_TRACE ]] && set -x
+
+# inspired by https://github.com/dokku/dokku-postgres/blob/master/common-functions#L255
+service_backupgem_schedule() {
+  declare desc="schedules a backup of the backupgem service"
+  declare SERVICE="$1" BUCKET_NAME="$2"
+  local CMD_BIN="$(dirname "${BASH_SOURCE[0]}")/backupbot"
+#  local CMD_BIN="$(which dokku)"  # TODO
+  local CRON_FILE="/etc/cron.d/backupgem-${SERVICE}"
+  local TMP_CRON_FILE="${PLUGIN_DATA_ROOT}/.TMP_CRON_FILE"
+
+  verify_service_name "$SERVICE"
+
+  echo "30 0 * * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} local ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
+  echo "0 1 * * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} daily ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
+  echo "30 1 * * 7 "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} weekly ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
+  echo "0 2 1 * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} monthly ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
+
+  sudo /bin/mv "$TMP_CRON_FILE" "$CRON_FILE"
+  sudo /bin/chown root:root "$CRON_FILE"
+  sudo /bin/chmod 644 "$CRON_FILE"
+}
+
+# inspired by https://github.com/dokku/dokku-postgres/blob/master/common-functions#L294
+service_backupgem_unschedule() {
+  declare desc="unschedules the backup of the service"
+  declare SERVICE="$1"
+  local CRON_FILE="/etc/cron.d/backupgem-${SERVICE}"
+  sudo /bin/rm -f "$CRON_FILE"
+}
+
+write_backup_env_file() {
+  declare KIND=$1 DATABASE=$2 DB_CONFIG_FILE=$3 BK_TMP_ENV_FILE=$4
+
+  # this can be useful if your s3 bucket lists several databases:
+  local database_key=$(echo "$database" | openssl passwd -stdin -salt "ab7XIsRLe1uM") # TODO makes it a command for easy retrieval
+    {
+      echo "BACKUP_POSTGRES_DATABASE_NAME=$DATABASE"
+      echo "BACKUP_POSTGRES_USER_NAME=postgres"
+#      echo "BACKUP_POSTGRES_PASSWORD=$DATABASE_PASSWORD"
+      echo "BACKUP_POSTGRES_HOST_NAME=db"
+#      echo "BACKUP_POSTGRES_DATABASE_PORT=$DATABASE_PORT"
+      echo "BACKUP_KIND=$KIND"
+      echo "BACKUP_DATABASE_KEY=$database_key"
+    } >> $BK_TMP_ENV_FILE
+    if [[ "$KIND" == "monthly" ]]; then  # TODO use config ENV vars
+      echo "BACKUP_ARCHIVE=true" >> $BK_TMP_ENV_FILE
+      echo "BACKUP_DATA_MOUNT_VOLUME=/filestore" >> $BK_TMP_ENV_FILE
+      echo "BACKUP_S3_KEEP=6" >> $BK_TMP_ENV_FILE
+    elif [[ "$KIND" == "daily" ]]; then
+      echo "BACKUP_SYNC=true" >> $BK_TMP_ENV_FILE
+      echo "BACKUP_DATA_MOUNT_VOLUME=/filestore" >> $BK_TMP_ENV_FILE
+      echo "BACKUP_S3_KEEP=3" >> $BK_TMP_ENV_FILE
+    elif [[ "$KIND" == "weekly" ]]; then
+      echo "BACKUP_S3_KEEP=3" >> $BK_TMP_ENV_FILE
+    fi
+
+    DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    LOCAL_BACKUP_DIR="$PLUGIN_DATA_ROOT/$SERVICE/backup"
+    if [[ "$KIND" == "local" ]]; then
+      dokku_log_info1 "backup will be saved in $LOCAL_BACKUP_DIR"
+      echo "BACKUP_LOCAL_STORAGE=/local_storage" >> $BK_TMP_ENV_FILE
+      echo "BACKUP_LOCAL_KEEP=$BACKUP_LOCAL_KEEP" >> $BK_TMP_ENV_FILE
+    else # TODO check that part
+      [[ -z "$BUCKET_NAME" ]] && dokku_log_fail "Please specify an aws bucket for the backup"
+      AWS_ACCESS_KEY_ID=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_ACCESS_KEY_ID")
+      AWS_SECRET_ACCESS_KEY=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_SECRET_ACCESS_KEY")
+      {
+        echo "BACKUP_S3_BUCKET=$BUCKET_NAME"
+        echo "BACKUP_S3_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
+        echo "BACKUP_S3_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+        echo "BACKUP_S3_BUCKET_PATH=$database_key/$KIND"
+      } >> $BK_TMP_ENV_FILE
+    fi
+
+    cat "$db_config_file" >> $BK_TMP_ENV_FILE # db specific settings eventually
+}
+
+# inspired by https://github.com/dokku/dokku-postgres/blob/master/common-functions#L172
+service_backupgem() {
+  declare desc="Creates a backup"
+  declare SERVICE="$1" KIND="$2" BUCKET_NAME="$3" USE_IAM_OPTIONAL_FLAG="$4"
+  local SERVICE_BACKUP_ROOT="$PLUGIN_DATA_ROOT/$SERVICE/backup"
+  local BACKUP_ENCRYPTION_CONFIG_ROOT="$PLUGIN_DATA_ROOT/$SERVICE/backup-encryption"
+  local AWS_ACCESS_KEY_ID_FILE="$SERVICE_BACKUP_ROOT/AWS_ACCESS_KEY_ID"
+  local AWS_SECRET_ACCESS_KEY_FILE="$SERVICE_BACKUP_ROOT/AWS_SECRET_ACCESS_KEY"
+  local SERVICE_ROOT="$PLUGIN_DATA_ROOT/$SERVICE"
+#  local ID="$(cat "$SERVICE_ROOT/ID")"
+  local BACKUP_PARAMETERS=""
+
+  [[ -z "$SERVICE" ]] && dokku_log_fail "Please specify a name for the service"
+  verify_service_name "$SERVICE"
+  [[ -z "$KIND" ]] && dokku_log_fail "Please specify kind (local, daily, weekly or monthly)"
+
+  for app in $(list_apps $SERVICE); do
+    dokku_log_info1 "performing backups for app $app"
+    local filestore_dir=$(get_filestore "$SERVICE")
+    for database in $(ls $filestore_dir); do
+      dokku_log_info1 "found database $database in filestore"
+      local db_config_file="$PLUGIN_DATA_ROOT/$SERVICE/backup/$KIND/$database"
+      if [[ -f "$db_config_file" ]]; then
+	at_least_one_backup=$database
+        dokku_log_info1 "saving database $database ..."
+        local bk_tmp_env_file=$(mktemp)
+        [[ -f "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" ]] && cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" >> $bk_tmp_env_file
+        
+	write_backup_env_file $KIND $database $db_config_file $bk_tmp_env_file
+	#cat $bk_tmp_env_file
+
+        # set +eo pipefail #TODO this enable failure. Do we want that or not?
+        cp -f "$DIR/config.rb" "$LOCAL_BACKUP_DIR/config.rb"
+        mkdir -p "$LOCAL_BACKUP_DIR/.data"
+        service_name="$(get_service_name "$SERVICE")"
+        network=$(get_service_network $service_name)
+        link="$service_name:db"
+        at_least_one_backup=true
+	# echo docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR:/root/Backup" --name "simpleloop-backup-$database" --link "$link" --network "$network" --env-file="$BK_TMP_ENV_FILE" akretion/simple-docker-backup
+        docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR:/root/Backup" --name "simpleloop-backup-$app-$database" --link "$link" --network "$network" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
+
+      else
+        dokku_log_info1 "SKIPPING $database as no backup file $db_config_file found!"
+      fi
+    done
+
+    if [[ -z "$at_least_one_backup" ]]; then
+      dokku_log_fail "WARNING NOT FOUND A SINGLE DATABASE CONFIGURED FOR BACKUP!!!" $at_least_one_backup
+    fi
+  done
+}

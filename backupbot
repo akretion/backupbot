@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -eo pipefail;
+[[ $DOKKU_TRACE ]] && set -x
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/functions"
+
+
+# *********** local helper functions  ************
+
+# ripped from https://github.com/dokku/dokku/blob/master/plugins/common/functions
+dokku_log_fail() {
+  declare desc="log fail formatter"
+  echo "$@" 1>&2
+  exit 1
+}
+
+dokku_log_info1() {
+  declare desc="log info1 formatter"
+  echo "-----> $*"
+}
+
+list_apps() {
+  declare desc="Retrieves the Docky app"
+  # NOTE on dokku return dokku_apps 
+  # from https://github.com/dokku/dokku/blob/master/plugins/common/functions
+  declare SERVICE="$1"
+  echo $SERVICE
+}
+
+get_filestore() {
+  declare SERVICE="$1"
+  echo "$PLUGIN_DATA_ROOT/$SERVICE/data/filestore"
+}
+
+# ripped from https://github.com/dokku/dokku-postgres/blob/master/common-functions
+verify_service_name() {
+  declare desc="Verifies that a service exists"
+  declare SERVICE="$1"
+  [[ -z "$SERVICE" ]] && dokku_log_fail "(verify_service_name) SERVICE must not be null"
+  [[ ! -d "$PLUGIN_DATA_ROOT/$SERVICE" ]] && dokku_log_fail "$PLUGIN_SERVICE service $SERVICE does not exist"
+  return 0
+}
+
+get_service_name() {
+  declare desc="Retrieves a docker service label"
+  declare SERVICE="$1"
+  local compose_name=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/".env | grep COMPOSE_PROJECT_NAME | tr "=" "\n" | tail -n1)
+  echo "$compose_name"_db_1
+}
+
+# required when Postgres is not on default network
+get_service_network() {
+  declare SERVICE_NAME="$1"
+  # TODO clean that using inspect --format but it's not so easy
+  local network_name=$(docker inspect "$SERVICE_NAME" | grep Networks -A1 | tail -n1 | tr "\"" "\n" | head -n2 | tail -n1)
+  echo $network_name
+}
+
+
+# *********** commands  ************
+
+case "$1" in
+  $PLUGIN_COMMAND_PREFIX:backup)
+    shift 1
+    service_backupgem "$@"
+    ;;
+
+  $PLUGIN_COMMAND_PREFIX:schedule)
+    shift 1
+    service_backupgem_schedule "$@"
+    ;;
+
+  $PLUGIN_COMMAND_PREFIX:unschedule)
+    shift 1
+    service_backupgem_unschedule "$@"
+    ;;
+
+  $PLUGIN_COMMAND_PREFIX:listdb)
+    # this is more a test/demo command to show we can connect to Postgres
+    [[ -z $2 ]] && dokku_log_fail "Please specify a name for the service"
+    verify_service_name "$2"
+    SERVICE="$2"; SERVICE_ROOT="$PLUGIN_DATA_ROOT/$SERVICE"
+    SERVICE_NAME="$(get_service_name "$SERVICE")"
+    docker exec "$SERVICE_NAME" psql -l -h localhost -U postgres
+    ;;
+
+  help | $PLUGIN_COMMAND_PREFIX:help)
+    # FIXME update
+    HELP=$(cat<<EOF
+    $PLUGIN_COMMAND_PREFIX:schedule <name> <bucket>, Schedules a backup of the $PLUGIN_COMMAND_PREFIX service using Backupgem
+    $PLUGIN_COMMAND_PREFIX:unschedule <name>, Unschedules the backup of the postgres service
+    $PLUGIN_COMMAND_PREFIX:backup <name> [kind], Perform db and filestore [kind] of backup on all apps and their registered databases
+EOF
+)
+    if [[ $1 = "$PLUGIN_COMMAND_PREFIX:help" ]] ; then
+      echo "  ================ AKRETION ============="
+      echo "$HELP" | sort | column -c2 -t -s,
+    else
+      echo "$HELP"
+    fi
+    ;;
+
+  *)
+    exit 1
+    ;;
+
+esac
