@@ -45,8 +45,12 @@ verify_service_name() {
 get_service_name() {
   declare desc="Retrieves a docker service label"
   declare SERVICE="$1"
-  local compose_name=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/".env | grep COMPOSE_PROJECT_NAME | tr "=" "\n" | tail -n1)
-  echo "$compose_name"_db_1
+  if [[ -f "$PLUGIN_DATA_ROOT/$SERVICE/".env ]]; then
+    local compose_name=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/".env | grep COMPOSE_PROJECT_NAME | tr "=" "\n" | tail -n1)
+    echo "$compose_name"_db_1
+  else
+    echo "$SERVICE"_db_1
+  fi
 }
 
 # required when Postgres is not on default network
