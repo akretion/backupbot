@@ -79,6 +79,32 @@ write_backup_env_file() {
     cat "$db_config_file" >> $BK_TMP_ENV_FILE # db specific settings eventually
 }
 
+service_backupgem_download() {
+  declare desc="Downloads a backup from SSH or an S3 bucket"
+  # TODO option to restores it eventually
+}
+
+service_backupgem_restore() {
+  declare desc="Restores a local backup"
+  declare SERVICE="$1" DB_NAME="$2" BACKUP_NAME="$3"
+  if [[ -z $BACKUP_NAME ]]; then
+    local LOCAL_BACKUP_DIR="$PLUGIN_DATA_ROOT/$SERVICE/backup/databasebackup"
+    # echo $LOCAL_BACKUP_DIR
+    # take last backup:
+    BACKUP_NAME=$(ls $LOCAL_BACKUP_DIR | tr " " "\n" | tail -n1)
+  fi
+  local tmp_dir=$(mktemp -d -t bk-XXXXXXXXXX)
+  tar xf "$LOCAL_BACKUP_DIR/$BACKUP_NAME/databasebackup.tar" -C $tmp_dir # TODO unzip eventually
+  local sql_file="$tmp_dir/databasebackup/databases/PostgreSQL.sql"
+  # echo $sql_file
+  local service_name="$(get_service_name "$SERVICE")"
+  if [[ -z $DB_NAME ]]; then
+    DB_NAME="$BACKUP_NAME"
+  fi
+  docker exec "$service_name" createdb -h localhost -U postgres -O odoo $DB_NAME
+  docker exec -i "$service_name" psql -h localhost -U postgres $DB_NAME < $sql_file
+}
+
 # inspired by https://github.com/dokku/dokku-postgres/blob/master/common-functions#L172
 service_backupgem() {
   declare desc="Creates a backup"

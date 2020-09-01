@@ -76,6 +76,11 @@ case "$1" in
     service_backupgem_unschedule "$@"
     ;;
 
+  $PLUGIN_COMMAND_PREFIX:restore)
+    shift 1
+    service_backupgem_restore "$@"
+    ;;
+
   $PLUGIN_COMMAND_PREFIX:listdb)
     # this is more a test/demo command to show we can connect to Postgres
     [[ -z $2 ]] && dokku_log_fail "Please specify a name for the service"
@@ -90,7 +95,8 @@ case "$1" in
     HELP=$(cat<<EOF
     $PLUGIN_COMMAND_PREFIX:schedule <name> <bucket>, Schedules a backup of the $PLUGIN_COMMAND_PREFIX service using Backupgem
     $PLUGIN_COMMAND_PREFIX:unschedule <name>, Unschedules the backup of the postgres service
-    $PLUGIN_COMMAND_PREFIX:backup <name> [kind], Perform db and filestore [kind] of backup on all apps and their registered databases
+    $PLUGIN_COMMAND_PREFIX:backup <name> [kind], Backup db and filestore [kind] of backup on all apps and their registered databases
+    $PLUGIN_COMMAND_PREFIX:restore <name> [db_name] [backup_name], Restores a local backup
 EOF
 )
     if [[ $1 = "$PLUGIN_COMMAND_PREFIX:help" ]] ; then
