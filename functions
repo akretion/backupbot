@@ -14,7 +14,7 @@ service_backupgem_schedule() {
 
   verify_service_name "$SERVICE"
 
-  echo "30 0 * * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} local ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
+  echo "0 */3 * * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} local ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
   echo "0 1 * * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} daily ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
   echo "30 1 * * 7 "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} weekly ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
   echo "0 2 1 * * "$USER" ${CMD_BIN} ${PLUGIN_COMMAND_PREFIX}:backup ${SERVICE} monthly ${BUCKET_NAME}" >> "$TMP_CRON_FILE"
@@ -22,6 +22,9 @@ service_backupgem_schedule() {
   sudo /bin/mv "$TMP_CRON_FILE" "$CRON_FILE"
   sudo /bin/chown root:root "$CRON_FILE"
   sudo /bin/chmod 644 "$CRON_FILE"
+  echo "done"
+  echo "cat $CRON_FILE"
+  cat "$CRON_FILE"
 }
 
 # inspired by https://github.com/dokku/dokku-postgres/blob/master/common-functions#L294
@@ -30,6 +33,9 @@ service_backupgem_unschedule() {
   declare SERVICE="$1"
   local CRON_FILE="/etc/cron.d/backupgem-${SERVICE}"
   sudo /bin/rm -f "$CRON_FILE"
+  echo "done"
+  echo "ls /etc/cron.d/"
+  ls /etc/cron.d/
 }
 
 write_backup_env_file() {
@@ -45,6 +51,7 @@ write_backup_env_file() {
 #      echo "BACKUP_POSTGRES_DATABASE_PORT=$DATABASE_PORT"
       echo "BACKUP_KIND=$KIND"
       echo "BACKUP_DATABASE_KEY=$database_key"
+      echo "BACKUP_GZIP"=true
     } >> $BK_TMP_ENV_FILE
     if [[ "$KIND" == "monthly" ]]; then  # TODO use config ENV vars
       echo "BACKUP_ARCHIVE=true" >> $BK_TMP_ENV_FILE
@@ -128,23 +135,20 @@ service_backupgem() {
       dokku_log_info1 "found database $database in filestore"
       local db_config_file="$PLUGIN_DATA_ROOT/$SERVICE/backup/$KIND/$database"
       if [[ -f "$db_config_file" ]]; then
-	at_least_one_backup=$database
+	      at_least_one_backup=$database
         dokku_log_info1 "saving database $database ..."
         local bk_tmp_env_file=$(mktemp)
         [[ -f "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" ]] && cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" >> $bk_tmp_env_file
-        
-	write_backup_env_file $KIND $database $db_config_file $bk_tmp_env_file
-	#cat $bk_tmp_env_file
+	      write_backup_env_file $KIND $database $db_config_file $bk_tmp_env_file
 
         # set +eo pipefail #TODO this enable failure. Do we want that or not?
-        cp -f "$DIR/config.rb" "$LOCAL_BACKUP_DIR/config.rb"
         mkdir -p "$LOCAL_BACKUP_DIR/.data"
         service_name="$(get_service_name "$SERVICE")"
         network=$(get_service_network $service_name)
         link="$service_name:db"
         at_least_one_backup=true
-	# echo docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR:/root/Backup" --name "simpleloop-backup-$database" --link "$link" --network "$network" --env-file="$BK_TMP_ENV_FILE" akretion/simple-docker-backup
-        docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR:/root/Backup" --name "simpleloop-backup-$app-$database" --link "$link" --network "$network" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
+	      # echo "conf" "$bk_tmp_env_file"
+        docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR/.data:/root/Backup/.data" --name "simpleloop-backup-$app-$database" --link "$link" -v "/var/run/postgresql/.s.PGSQL.5432:/var/run/postgresql/.s.PGSQL.5432" --network "$network" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
 
       else
         dokku_log_info1 "SKIPPING $database as no backup file $db_config_file found!"
