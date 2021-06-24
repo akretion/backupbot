@@ -101,9 +101,11 @@ service_backupgem_restore() {
     BACKUP_NAME=$(ls $LOCAL_BACKUP_DIR | tr " " "\n" | tail -n1)
   fi
   local tmp_dir=$(mktemp -d -t bk-XXXXXXXXXX)
-  tar xf "$LOCAL_BACKUP_DIR/$BACKUP_NAME/databasebackup.tar" -C $tmp_dir # TODO unzip eventually
+  tar xf "$LOCAL_BACKUP_DIR/$BACKUP_NAME/databasebackup.tar" -C $tmp_dir
+  if [[ -f "$tmp_dir/databasebackup/databases/PostgreSQL.sql.gz" ]]; then
+    gunzip "$tmp_dir/databasebackup/databases/PostgreSQL.sql.gz"
+  fi
   local sql_file="$tmp_dir/databasebackup/databases/PostgreSQL.sql"
-  # echo $sql_file
   local service_name="$(get_service_name "$SERVICE")"
   if [[ -z $DB_NAME ]]; then
     DB_NAME="$BACKUP_NAME"
