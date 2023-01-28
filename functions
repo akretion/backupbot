@@ -71,16 +71,16 @@ write_backup_env_file() {
       dokku_log_info1 "backup will be saved in $LOCAL_BACKUP_DIR"
       echo "BACKUP_LOCAL_STORAGE=/local_storage" >> $BK_TMP_ENV_FILE
       echo "BACKUP_LOCAL_KEEP=$BACKUP_LOCAL_KEEP" >> $BK_TMP_ENV_FILE
-    else # TODO check that part
-      [[ -z "$BUCKET_NAME" ]] && dokku_log_fail "Please specify an aws bucket for the backup"
-      AWS_ACCESS_KEY_ID=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_ACCESS_KEY_ID")
-      AWS_SECRET_ACCESS_KEY=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_SECRET_ACCESS_KEY")
-      {
-        echo "BACKUP_S3_BUCKET=$BUCKET_NAME"
-        echo "BACKUP_S3_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
-        echo "BACKUP_S3_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
-        echo "BACKUP_S3_BUCKET_PATH=$database_key/$KIND"
-      } >> $BK_TMP_ENV_FILE
+#    else # TODO check that part
+#      [[ -z "$BUCKET_NAME" ]] && dokku_log_fail "Please specify an aws bucket for the backup"
+#      AWS_ACCESS_KEY_ID=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_ACCESS_KEY_ID")
+#      AWS_SECRET_ACCESS_KEY=$(cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/AWS_SECRET_ACCESS_KEY")
+#      {
+#        echo "BACKUP_S3_BUCKET=$BUCKET_NAME"
+#        echo "BACKUP_S3_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
+#        echo "BACKUP_S3_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+#        echo "BACKUP_S3_BUCKET_PATH=$database_key/$KIND"
+#      } >> $BK_TMP_ENV_FILE
     fi
 
     cat "$db_config_file" >> $BK_TMP_ENV_FILE # db specific settings eventually
@@ -141,18 +141,25 @@ service_backupgem() {
         dokku_log_info1 "saving database $database ..."
         local bk_tmp_env_file=$(mktemp)
         [[ -f "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" ]] && cat "$PLUGIN_DATA_ROOT/$SERVICE/backup/bk_env" >> $bk_tmp_env_file
-	      write_backup_env_file $KIND $database $db_config_file $bk_tmp_env_file
+	write_backup_env_file $KIND $database $db_config_file $bk_tmp_env_file
 
         # set +eo pipefail #TODO this enable failure. Do we want that or not?
         mkdir -p "$LOCAL_BACKUP_DIR/.data"
-        service_name="$(get_service_name "$SERVICE")"
-        network=$(get_service_network $service_name)
-        link="$service_name:db"
         at_least_one_backup=true
-	      # echo "conf" "$bk_tmp_env_file"
-        docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR/.data:/root/Backup/.data" --name "simpleloop-backup-$app-$database" --link "$link" -v "/var/run/postgresql/.s.PGSQL.5432:/var/run/postgresql/.s.PGSQL.5432" --network "$network" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
 
-      else
+	if $(grep -Fq "/var/run/postgresql" $bk_tmp_env_file) ; then
+	  echo "assuming host Postgres"
+          docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR/.data:/root/Backup/.data" --name "simpleloop-backup-$app-$database" -v "/var/run/postgresql/.s.PGSQL.5432:/var/run/postgresql/.s.PGSQL.5432" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
+
+	else
+          echo "assuming dockerized Postgres"
+          service_name="$(get_service_name "$SERVICE")"
+          network=$(get_service_network $service_name)
+          link="$service_name:db"
+          docker run --rm -v "$PLUGIN_DATA_ROOT/$app/data/filestore/$database":/filestore -v "$DIR/models:/root/Backup/models" -v "$LOCAL_BACKUP_DIR:/local_storage" -v "$LOCAL_BACKUP_DIR/.data:/root/Backup/.data" --name "simpleloop-backup-$app-$database" --link "$link" -v "/var/run/postgresql/.s.PGSQL.5432:/var/run/postgresql/.s.PGSQL.5432" --network "$network" --env-file="$bk_tmp_env_file" "$BACKUP_IMAGE"
+	fi
+
+     else
         dokku_log_info1 "SKIPPING $database as no backup file $db_config_file found!"
       fi
     done
